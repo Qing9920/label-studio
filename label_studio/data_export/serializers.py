@@ -56,16 +56,4 @@ class ExportSerializer(serializers.ModelSerializer):
             'md5',
             'counters',
         ]
-        fields = read_only + [
-            'only_finished',
-            'task_ids',
-        ]
-
-        def validate_task_ids(self, value):
-            if not value:
-                return []
-            if not isinstance(value, list):
-                raise serializers.ValidationError('Task_ids has to be list')
-            if not all((isinstance(id_, int) for id_ in value)):
-                raise serializers.ValidationError('Task_ids has to be list of numbers')
-            return value
+        fields = read_only

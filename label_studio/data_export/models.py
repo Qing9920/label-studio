@@ -77,17 +77,6 @@ class Export(models.Model):
     )
     counters = models.JSONField(_('Exporting meta data'), default=dict)
 
-    only_finished = models.BooleanField(
-        _('Only finished'),
-        default=False,
-        help_text=_('If true - it exports only finished tasks'),
-    )
-    task_ids = models.JSONField(
-        _('Task ids list'),
-        default=list,
-        help_text=_('If list is empty - download all tasks'),
-    )
-
     def has_permission(self, user):
         return self.project.has_permission(user)
 
@@ -97,10 +86,6 @@ class Export(models.Model):
         with transaction.atomic():
             counters = Project.objects.with_counts().filter(id=self.project.id)[0].get_counters()
             tasks = self.project.tasks.select_related('project').prefetch_related('annotations', 'predictions')
-            if self.task_ids:
-                tasks = tasks.filter(id__in=self.task_ids)
-            if self.only_finished:
-                tasks = tasks.filter(annotations__isnull=False).distinct()
 
             task_ids = list(tasks.values_list('id', flat=True))
 
