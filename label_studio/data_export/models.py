@@ -16,6 +16,7 @@ from core.label_config import parse_config
 from core.redis import redis_connected
 from core.utils.common import batch
 from core.utils.io import get_all_files_from_dir, get_temp_dir, read_bytes_stream
+from core.serializers import SerializerOption, generate_serializer
 from django.conf import settings
 from django.core.cache.backends.base import default_key_func
 from django.core.files import File
@@ -24,9 +25,12 @@ from django.utils.translation import gettext_lazy as _
 from django_rq import queues
 from label_studio_converter import Converter
 from projects.models import Project
-from tasks.models import Annotation
+from tasks.models import Annotation, Task, AnnotationDraft, Prediction
 
 logger = logging.getLogger(__name__)
+
+ONLY = 'only'
+EXCLUDE = 'exclude'
 
 
 class Export(models.Model):
@@ -80,19 +84,145 @@ class Export(models.Model):
     def has_permission(self, user):
         return self.project.has_permission(user)
 
-    def get_export_data(self):
+    def _get_filtered_tasks(self, tasks, task_filter_options=None):
+        """
+        task_filter_options: None or Dict({
+            tab_id: optional int
+
+            skipped: optional None or str:("include|exclude")
+
+            finished: optional None or str:("include|exclude")
+                task.is_labled = true
+        })
+        """
+        if not isinstance(task_filter_options, dict):
+            return tasks
+        if 'tab_id' in task_filter_options:
+            pass
+        if 'skipped' in task_filter_options:
+            value = task_filter_options['skipped']
+            if value == ONLY:
+                tasks = tasks.filter(annotations__was_cancelled=True)
+            elif value == EXCLUDE:
+                tasks = tasks.exclude(annotations__was_cancelled=True)
+        if 'finished' in task_filter_options:
+            value = task_filter_options['finished']
+            if value == ONLY:
+                tasks = tasks.filter(is_labled=True)
+            elif value == EXCLUDE:
+                tasks = tasks.exclude(is_labled=True)
+        return tasks
+
+    def _get_filtered_annotations(self, annotatins, annotation_filter_options=None):
+        """
+        annotation_filter_options: None or Dict({
+            ground_truth: optional None or str:("include|exclude")
+                annotations.ground_truth
+        })
+        """
+        if not isinstance(annotation_filter_options, dict):
+            return annotatins
+        if 'ground_truth' in annotation_filter_options:
+            value = annotation_filter_options['ground_truth']
+            if value == ONLY:
+                annotatins = annotatins.filter(ground_truth=True)
+            elif value == EXCLUDE:
+                annotatins = annotatins.exclude(ground_truth=True)
+        return annotatins
+
+    def _get_export_serializer_option(self, serialization_options):
+
+        from .serializers import ExportDataSerializer
+
+        from tasks.serializers import AnnotationDraftSerializer
+        from organizations.serializers import UserSerializer
+
+        from rest_framework import serializers
+
+        return {
+            "model_class": Task,
+            "base_serializer": ExportDataSerializer,  # to inherit to_representation
+            "exclude": ('overlap', 'is_labeled'),
+            "nested_fields": {
+                "annotations": {
+                    'model_class': Annotation,
+                    'field_options': {
+                        'many': True,
+                        'source': '_annotations',  # filtered annotations by _get_filtered_annotations
+                    },
+                    'nested_fields': {
+                        'completed_by': {'serializer_class': UserSerializer},
+                        # 'completed_by': {
+                        #     'serializer_class': serializers.IntegerField,
+                        #     'field_options': {'source': 'completed_by_id'},
+                        # },
+                    },
+                },
+                "predictions": {
+                    "model_class": Prediction,
+                    "field_options": {'many': True},
+                    "nested_fields": {'created_ago': {'serializer_class': serializers.CharField}},
+                },
+                "drafts": {
+                    "serializer_class": AnnotationDraftSerializer,
+                    "field_options": {'many': True},
+                },
+                "file_upload": {
+                    "serializer_class": serializers.FileField,
+                    "field_options": {'source': 'file_upload_name'},
+                },
+            },
+        }
+
+    def get_export_data(
+        self,
+        task_filter_options=None,
+        annotation_filter_options=None,
+        serialization_options=None,
+    ):
+        """
+        serialization_options: None or Dict({
+            drafts: optional
+                None
+                    or
+                Dict({
+                    only_id: true/false
+                })
+            predictions: optional
+                None
+                    or
+                Dict({
+                    only_id: true/false
+                })
+            annotator: optional
+                None
+                    or
+                Dict({
+                    only_id: true/false
+                })
+        })
+        """
         from .serializers import ExportDataSerializer
 
         with transaction.atomic():
             counters = Project.objects.with_counts().filter(id=self.project.id)[0].get_counters()
-            tasks = self.project.tasks.select_related('project').prefetch_related('annotations', 'predictions')
+            tasks = self.project.tasks.select_related('project').prefetch_related(
+                'annotations', 'predictions', 'drafts'
+            )
 
-            task_ids = list(tasks.values_list('id', flat=True))
+            tasks = list(tasks)
+            for task in tasks:
+                task._annotations = self._get_filtered_annotations(task.annotations.all())
+
+            serializer_option_for_generator = self._get_export_serializer_option(serialization_options)
+            serializer_option_for_generator['field_options'] = {
+                'many': True,
+                'instance': tasks,
+            }
 
             logger.debug('Serialize tasks for export')
-            result = []
-            for _task_ids in batch(task_ids, 1000):
-                result += ExportDataSerializer(tasks.filter(id__in=_task_ids), many=True).data
+            result = generate_serializer(SerializerOption(serializer_option_for_generator)).data
+
         return result, counters
 
     def export_to_file(self):

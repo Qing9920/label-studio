@@ -24,8 +24,16 @@ class SerializerOption:
             raise ValueError('Pass serializer_class or model_class')
 
         self._base_serializer = self.data.get('base_serializer', serializers.ModelSerializer)
-        self._fields = self.data.get('fields', '__all__')
+
+        self._fields = self.data.get('fields', None)
         self._exclude = self.data.get('exclude', None)
+
+        if self._fields and self._exclude:
+            raise ValueError("Fields and exclude can't be passed simultaneously")
+
+        if self._exclude is None:
+            self._fields = '__all__'
+
         self._field_options = self.data.get('field_options', {})
 
         for field_key, field_value in data.get('nested_fields', {}).items():
@@ -60,13 +68,14 @@ class SerializerOption:
         return self._field_options
 
 
-def generate_model_serializer(option):
+def generate_serializer(option):
     """
-    Return serializer by option object: 
+    Return serializer by option object:
     """
     if option.serializer_class:
         ResultClass = option.serializer_class
     else:
+
         class ResultClass(option.base_serializer):
             class Meta:
                 model = option.model_class
@@ -76,7 +85,7 @@ def generate_model_serializer(option):
             def get_fields(self):
                 fields = super().get_fields()
                 for key, value in option.nested_fields.items():
-                    fields[key] = generate_model_serializer(value)
+                    fields[key] = generate_serializer(value)
                 return fields
 
     return ResultClass(**option.field_options)
