@@ -139,7 +139,41 @@ class Export(models.Model):
 
         from rest_framework import serializers
 
-        return {
+        drafts = None
+        predictions = None
+        completed_by = {'serializer_class': UserSerializer}
+        if isinstance(serialization_options, dict):
+            if 'drafts' in serialization_options and isinstance(serialization_options['drafts'], dict):
+                if serialization_options['drafts'].get('only_id'):
+                    drafts = {
+                        "serializer_class": serializers.PrimaryKeyRelatedField,
+                        "field_options": {'many': True, 'read_only': True},
+                    }
+                else:
+                    drafts = {
+                        "serializer_class": AnnotationDraftSerializer,
+                        "field_options": {'many': True},
+                    }
+            if 'predictions' in serialization_options and isinstance(serialization_options['predictions'], dict):
+                if serialization_options['drafts'].get('only_id'):
+                    predictions = {
+                        "serializer_class": serializers.PrimaryKeyRelatedField,
+                        "field_options": {'many': True, 'read_only': True},
+                    }
+                else:
+                    predictions = {
+                        "model_class": Prediction,
+                        "field_options": {'many': True},
+                        "nested_fields": {'created_ago': {'serializer_class': serializers.CharField}},
+                    }
+            if 'annotations__completed_by' in serialization_options:
+                if serialization_options['annotations__completed_by'].get('only_id'):
+                    completed_by = {
+                        'serializer_class': serializers.IntegerField,
+                        'field_options': {'source': 'completed_by_id'},
+                    }
+
+        result = {
             "model_class": Task,
             "base_serializer": ExportDataSerializer,  # to inherit to_representation
             "exclude": ('overlap', 'is_labeled'),
@@ -151,28 +185,16 @@ class Export(models.Model):
                         'source': '_annotations',  # filtered annotations by _get_filtered_annotations
                     },
                     'nested_fields': {
-                        'completed_by': {'serializer_class': UserSerializer},
-                        # 'completed_by': {
-                        #     'serializer_class': serializers.IntegerField,
-                        #     'field_options': {'source': 'completed_by_id'},
-                        # },
+                        'completed_by': completed_by
                     },
-                },
-                "predictions": {
-                    "model_class": Prediction,
-                    "field_options": {'many': True},
-                    "nested_fields": {'created_ago': {'serializer_class': serializers.CharField}},
-                },
-                "drafts": {
-                    "serializer_class": AnnotationDraftSerializer,
-                    "field_options": {'many': True},
-                },
-                "file_upload": {
-                    "serializer_class": serializers.FileField,
-                    "field_options": {'source': 'file_upload_name'},
                 },
             },
         }
+        if drafts is not None:
+            result['nested_fields']['drafts'] = drafts
+        if predictions is not None:
+            result['nested_fields']['predictions'] = predictions
+        return result
 
     def get_export_data(
         self,
@@ -194,7 +216,7 @@ class Export(models.Model):
                 Dict({
                     only_id: true/false
                 })
-            annotator: optional
+            annotations__completed_by: optional
                 None
                     or
                 Dict({
@@ -209,10 +231,10 @@ class Export(models.Model):
             tasks = self.project.tasks.select_related('project').prefetch_related(
                 'annotations', 'predictions', 'drafts'
             )
-
+            tasks = self._get_filtered_tasks(tasks, task_filter_options=task_filter_options)
             tasks = list(tasks)
             for task in tasks:
-                task._annotations = self._get_filtered_annotations(task.annotations.all())
+                task._annotations = self._get_filtered_annotations(task.annotations.all(), annotation_filter_options)
 
             serializer_option_for_generator = self._get_export_serializer_option(serialization_options)
             serializer_option_for_generator['field_options'] = {
