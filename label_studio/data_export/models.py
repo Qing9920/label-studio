@@ -113,7 +113,7 @@ class Export(models.Model):
                 tasks = tasks.exclude(is_labled=True)
         return tasks
 
-    def _get_filtered_annotations(self, annotatins, annotation_filter_options=None):
+    def _get_filtered_annotations(self, annotations, annotation_filter_options=None):
         """
         annotation_filter_options: None or Dict({
             ground_truth: optional None or str:("include|exclude")
@@ -121,14 +121,14 @@ class Export(models.Model):
         })
         """
         if not isinstance(annotation_filter_options, dict):
-            return annotatins
+            return annotations
         if 'ground_truth' in annotation_filter_options:
             value = annotation_filter_options['ground_truth']
             if value == ONLY:
-                annotatins = annotatins.filter(ground_truth=True)
+                annotations = annotations.filter(ground_truth=True)
             elif value == EXCLUDE:
-                annotatins = annotatins.exclude(ground_truth=True)
-        return annotatins
+                annotations = annotations.exclude(ground_truth=True)
+        return annotations
 
     def _get_export_serializer_option(self, serialization_options):
 
